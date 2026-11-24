@@ -50,7 +50,7 @@ class BmsProtocolTest {
 
     @Test fun fragmentedAndCoalescedNotifications() {
         val results = mutableListOf<ByteArray>()
-        val parser = ModbusFrameAssembler { results += it }
+        val parser = ModbusFrameAssembler(onPayload = { results += it })
         val packet = modbusFrame(statusPayload())
         parser.offer(packet.copyOfRange(0, 7))
         parser.offer(packet.copyOfRange(7, 32))
@@ -62,7 +62,7 @@ class BmsProtocolTest {
 
     @Test fun corruptCrcIsRejected() {
         val results = mutableListOf<ByteArray>()
-        val parser = ModbusFrameAssembler { results += it }
+        val parser = ModbusFrameAssembler(onPayload = { results += it })
         val invalid = modbusFrame(statusPayload())
         invalid[15] = (invalid[15].toInt() xor 1).toByte()
         parser.offer(invalid + modbusFrame(statusPayload()))
