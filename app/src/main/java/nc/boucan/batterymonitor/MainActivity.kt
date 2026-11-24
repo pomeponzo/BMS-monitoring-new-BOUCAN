@@ -9,15 +9,29 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.widget.ArrayAdapter
 
 /**
- * A standalone, offline monitor. No cloud account, analytics SDK or mock telemetry.
- * Requires the vendor app to disconnect before taking ownership of the BLE link.
+ * On launch: request BLE permissions, scan for this exact battery name or
+ * previously connected MAC, connect automatically. Re-scan on link loss
+ * while Activity is visible; never automatically operate MOSFETs.
  */
 class MainActivity : Activity(), BmsBleClient.Listener {
     private lateinit var ui: DashboardUi
     private lateinit var ble: BmsBleClient
+    private val main = Handler(Looper.getMainLooper())
+    private var foreground = false
+    private var autoEnabled = true
+    private var scanning = false
+    private var linking = false
+    private var scanMatched = false
+    private var pendingAddress: String? = null
+    private var bluetoothRequested = false
+    private var autoPermissionRequested = false
+    private val prefs by lazy { getSharedPreferences("boucan_link", MODE_PRIVATE) }
+    private val autoRetry = Runnable { if (foreground && autoEnabled) attemptAutoConnection() }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -25,9 +39,40 @@ class MainActivity : Activity(), BmsBleClient.Listener {
         setContentView(ui.root)
         ble = BmsBleClient(this, this)
         ui.connectButton.setOnClickListener {
-            if (ui.isConnected) ble.disconnect() else ensurePermissionsAndScan()
+            if (ui.isConnected) {
+                autoEnabled = false
+                main.removeCallbacks(autoRetry)
+                ble.disconnect()
+            } else {
+                autoEnabled = true
+                main.removeCallbacks(autoRetry)
+                attemptAutoConnection()
+            }
         }
-        ui.showState("HORS LIGNE", false)
+        // Manual discovery remains accessible by long-pressing the connect button.
+        ui.connectButton.setOnLongClickListener {
+            if (!ui.isConnected) {
+                autoEnabled = false
+                main.removeCallbacks(autoRetry)
+                openDevicePicker()
+            }
+            true
+        }
+        ui.onMosAction = { switch, enabled -> confirmMosAction(switch, enabled) }
+        ui.showState("RECHERCHE AUTOMATIQUE", false)
+    }
+
+    override fun onStart() {
+        super.onStart()
+        foreground = true
+        if (autoEnabled && !ui.isConnected) main.post(autoRetry)
+    }
+
+    override fun onStop() {
+        foreground = false
+        main.removeCallbacks(autoRetry)
+        if (scanning) { scanning = false; ble.stopScan() }
+        super.onStop()
     }
 
     private fun requiredPermissions(): Array<String> =
@@ -35,69 +80,180 @@ class MainActivity : Activity(), BmsBleClient.Listener {
             arrayOf(Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT)
         } else arrayOf(Manifest.permission.ACCESS_FINE_LOCATION)
 
-    private fun ensurePermissionsAndScan() {
+    private fun ensureBluetoothReady(): Boolean {
         val missing = requiredPermissions().filter {
             checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED
         }
         if (missing.isNotEmpty()) {
-            requestPermissions(missing.toTypedArray(), 201)
-            return
+            if (!autoPermissionRequested) {
+                autoPermissionRequested = true
+                requestPermissions(missing.toTypedArray(), 201)
+            } else ui.showState("AUTORISATION BLUETOOTH REQUISE", false)
+            return false
         }
         val adapter = (getSystemService(BLUETOOTH_SERVICE) as BluetoothManager).adapter
         if (adapter == null) {
-            onError("Bluetooth LE non disponible sur cet appareil")
-            return
+            onError("Bluetooth LE indisponible")
+            return false
         }
         if (!adapter.isEnabled) {
-            @Suppress("DEPRECATION")
-            startActivity(Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE))
-            return
-        }
-        openDevicePicker()
-    }
-
-    @Suppress("DEPRECATION")
-    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
-        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        if (requestCode == 201) {
-            if (grantResults.isNotEmpty() && grantResults.all { it == PackageManager.PERMISSION_GRANTED }) {
-                ensurePermissionsAndScan()
-            } else onError("Autorise « Appareils à proximité » pour détecter le BMS")
-        }
-    }
-
-    private fun openDevicePicker() {
-        val devices = mutableListOf<BmsBleClient.FoundDevice>()
-        val display = mutableListOf<String>()
-        val listAdapter = ArrayAdapter(this, android.R.layout.simple_list_item_1, display)
-        val dialog = AlertDialog.Builder(this)
-            .setTitle("Recherche des batteries BLE…")
-            .setAdapter(listAdapter) { _, index ->
-                ble.stopScan()
-                ble.connect(devices[index].device)
+            ui.showState("ACTIVER LE BLUETOOTH", false)
+            if (!bluetoothRequested) {
+                bluetoothRequested = true
+                startActivityForResult(Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE), 202)
             }
-            .setNegativeButton("ANNULER") { dlg, _ -> dlg.dismiss() }
-            .create()
-        dialog.setOnDismissListener { ble.stopScan() }
-        dialog.show()
+            return false
+        }
+        return true
+    }
+
+    private fun attemptAutoConnection() {
+        if (!foreground || !autoEnabled || scanning || linking || ui.isConnected) return
+        if (!ensureBluetoothReady()) return
+        scanning = true
+        scanMatched = false
+        ui.showState("RECHERCHE DE DL-BOUCAN…", false)
+        val preferred = prefs.getString("last_address", null)
+        var fallbackNamed: BmsBleClient.FoundDevice? = null
         ble.startScan(
             onDevice = { found ->
-                if (isFinishing || !dialog.isShowing) return@startScan
-                devices.add(found)
-                display.add("${found.label}\n${found.address}     ${found.rssi} dBm")
-                listAdapter.notifyDataSetChanged()
-                if (devices.size == 1) dialog.setTitle("Sélectionne ton BMS")
+                if (!foreground || !autoEnabled || scanMatched) return@startScan
+                val remembered = preferred != null && found.address.equals(preferred, ignoreCase = true)
+                val named = found.label.trim().equals("DL-BOUCAN battery", ignoreCase = true)
+                if (preferred != null && named && !remembered) fallbackNamed = found
+                // Prefer the last connected device. Only fall back to its name
+                // after the full scan (BLE private addresses can rotate).
+                if (remembered || (preferred == null && named)) {
+                    scanMatched = true
+                    scanning = false
+                    linking = true
+                    pendingAddress = found.address
+                    ble.connect(found.device)
+                }
             },
             onFinished = {
-                if (dialog.isShowing && devices.isEmpty()) {
-                    dialog.setTitle("Aucun appareil détecté")
+                scanning = false
+                if (foreground && autoEnabled && !scanMatched && !linking && !ui.isConnected) {
+                    val candidate = fallbackNamed
+                    if (candidate != null) {
+                        scanMatched = true
+                        linking = true
+                        pendingAddress = candidate.address
+                        ble.connect(candidate.device)
+                    } else {
+                        ui.showState("BATTERIE INTROUVABLE — NOUVEL ESSAI", false)
+                        scheduleRetry(10_000L)
+                    }
                 }
             }
         )
     }
 
+    private fun scheduleRetry(delay: Long) {
+        main.removeCallbacks(autoRetry)
+        if (foreground && autoEnabled) main.postDelayed(autoRetry, delay)
+    }
+
+    @Suppress("DEPRECATION")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == 202) {
+            bluetoothRequested = false
+            if (resultCode == RESULT_OK && autoEnabled) scheduleRetry(350L)
+        }
+    }
+
+    @Suppress("DEPRECATION")
+    override fun onRequestPermissionsResult(
+        requestCode: Int, permissions: Array<out String>, grantResults: IntArray
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == 201) {
+            if (grantResults.isNotEmpty() && grantResults.all { it == PackageManager.PERMISSION_GRANTED }) {
+                if (autoEnabled) scheduleRetry(250L) else openDevicePicker()
+            } else {
+                ui.showState("PERMISSION BLE NON ACCORDÉE", false)
+                onError("Autorise « Appareils à proximité » dans les paramètres de l'app")
+            }
+        }
+    }
+
+    private fun openDevicePicker() {
+        if (scanning || linking || ui.isConnected) return
+        if (!ensureBluetoothReady()) return
+        val devices = mutableListOf<BmsBleClient.FoundDevice>()
+        val labels = mutableListOf<String>()
+        val adapter = ArrayAdapter(this, android.R.layout.simple_list_item_1, labels)
+        val dialog = AlertDialog.Builder(this)
+            .setTitle("Sélection manuelle du BMS")
+            .setAdapter(adapter) { _, index ->
+                ble.stopScan()
+                pendingAddress = devices[index].address
+                autoEnabled = true
+                linking = true
+                ble.connect(devices[index].device)
+            }
+            .setNegativeButton("ANNULER") { d, _ -> d.dismiss() }
+            .create()
+        dialog.setOnDismissListener { if (scanning) { scanning = false; ble.stopScan() } }
+        dialog.show()
+        scanning = true
+        ble.startScan(
+            onDevice = { found ->
+                if (!dialog.isShowing) return@startScan
+                devices.add(found)
+                labels.add("${found.label}\n${found.address} · ${found.rssi} dBm")
+                adapter.notifyDataSetChanged()
+            },
+            onFinished = { scanning = false }
+        )
+    }
+
+    private fun confirmMosAction(switch: MosSwitch, enabled: Boolean) {
+        if (!ui.isConnected) {
+            onError("Reconnecter le BMS avant toute commande")
+            return
+        }
+        val verb = if (enabled) "RÉACTIVER" else "COUPER"
+        val name = if (switch == MosSwitch.CHARGE) "LA CHARGE" else "LA DÉCHARGE"
+        val impact = if (enabled)
+            "Cette action demande la réactivation du MOSFET. Le BMS peut la refuser si une protection est active."
+        else if (switch == MosSwitch.CHARGE)
+            "Cette action peut interrompre immédiatement la recharge de la batterie."
+        else "Cette action peut couper immédiatement l'alimentation des appareils reliés à la batterie."
+        AlertDialog.Builder(this)
+            .setTitle("$verb $name ?")
+            .setMessage(
+                "$impact\n\n" +
+                "Le protocole MOS a été documenté sur des BMS Daly compatibles, " +
+                "mais n'a pas encore été vérifié sur ce firmware précis. " +
+                "Le changement sera confirmé uniquement après relecture de l'état du BMS.\n\n" +
+                "Exécuter cette commande ?"
+            )
+            .setNegativeButton("ANNULER", null)
+            .setPositiveButton("CONFIRMER") { _, _ ->
+                ui.showMosPending(switch, enabled)
+                if (!ble.setMos(switch, enabled)) {
+                    ui.showMosResult(switch, enabled, false, "Commande indisponible : mesures récentes requises")
+                }
+            }
+            .show()
+    }
+
     override fun onState(label: String, connected: Boolean) {
-        runOnUiThread { ui.showState(label, connected) }
+        runOnUiThread {
+            ui.showState(label, connected)
+            if (connected) {
+                linking = false
+                pendingAddress?.let { prefs.edit().putString("last_address", it).apply() }
+                pendingAddress = null
+                main.removeCallbacks(autoRetry)
+            } else if (label == "Déconnecté") {
+                linking = false
+                pendingAddress = null
+                if (autoEnabled) scheduleRetry(4_000L)
+            }
+        }
     }
 
     override fun onSnapshot(snapshot: BatterySnapshot) {
@@ -108,11 +264,16 @@ class MainActivity : Activity(), BmsBleClient.Listener {
         runOnUiThread { ui.showCapacity(capacityAh) }
     }
 
+    override fun onMosResult(switch: MosSwitch, desiredOn: Boolean, ok: Boolean, message: String) {
+        runOnUiThread { ui.showMosResult(switch, desiredOn, ok, message) }
+    }
+
     override fun onError(message: String) {
         runOnUiThread { ui.showError(message) }
     }
 
     override fun onDestroy() {
+        main.removeCallbacks(autoRetry)
         ble.close()
         super.onDestroy()
     }
