@@ -244,7 +244,7 @@ class DashboardUi(private val activity: Activity) {
         }
         box.addView(label(title, 10f, muted, bold = true, spacing = .12f))
         gap(box, 11)
-        val row = LinearLayout(activity).apply { gravity = Gravity.BASELINE }
+        val row = LinearLayout(activity).apply { gravity = Gravity.BOTTOM }
         val value = label("—", 32f, ink, family = mono)
         row.addView(value)
         row.addView(label("  $unit", 15f, muted, family = condensed))
