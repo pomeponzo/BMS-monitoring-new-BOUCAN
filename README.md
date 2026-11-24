@@ -18,7 +18,7 @@ Il **n'y a pas de valeurs factices** à l'écran en l'absence de liaison BLE. L'
 
 1. Ouvrir ce dépôt dans Android Studio : **File → Open** et choisir le dossier du projet.
 2. Utiliser un SDK Android 35 et un JDK 17. Le projet utilise Android Gradle Plugin 8.9.2, Kotlin 2.1.20 et Gradle 8.11.1.
-3. Si Android Studio demande un wrapper Gradle absent du dépôt, générer celui-ci dans le terminal du projet avec une installation Gradle 8.11.1 : `gradle wrapper --gradle-version 8.11.1`.
+3. Le dépôt inclut le **Gradle Wrapper 8.11.1** (`gradlew`, `gradlew.bat` et le JAR) : Android Studio peut synchroniser le projet sans installation Gradle séparée.
 4. Synchroniser Gradle, puis **Build → Build APK(s)** ; résultat `app/build/outputs/apk/debug/app-debug.apk`.
 5. Transférer cet APK vers ton téléphone, autoriser l’installation depuis la source utilisée, puis installer. Ou utiliser **Run** avec le débogage USB.
 6. Fermer/déconnecter l’application du fabricant (une seule application peut généralement utiliser le canal GATT à la fois). Activer Bluetooth et accorder « Appareils à proximité ». Sur Android 8–11, autoriser la localisation pour le scan BLE.

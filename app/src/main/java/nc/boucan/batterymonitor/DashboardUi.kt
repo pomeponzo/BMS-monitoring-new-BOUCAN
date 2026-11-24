@@ -19,7 +19,6 @@ import android.widget.TextView
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
-import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
@@ -282,7 +281,7 @@ class DashboardUi(private val activity: Activity) {
         remaining.text = "${fmt(value.remainingAh)} Ah"
         voltage.text = fmt(value.voltageV, 2)
         current.text = fmt(value.currentA)
-        power.text = fmt(abs(value.powerW), 0)
+        power.text = fmt(value.powerW, 0)
         temperature.text = value.temperaturesC.firstOrNull()?.toString() ?: "—"
         if (value.cellsMv.isNotEmpty()) {
             val delta = (value.cellsMv.maxOrNull() ?: 0) - (value.cellsMv.minOrNull() ?: 0)
