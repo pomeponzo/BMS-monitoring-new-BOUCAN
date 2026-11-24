@@ -19,9 +19,12 @@ import android.os.Looper
 import java.util.UUID
 
 /**
- * BLE client for DL-BOUCAN battery. Only sends confirmed Modbus READ (0x03)
- * frames to FFF2. Never writes BMS configuration or MOSFET state.
- * Permissions are requested by MainActivity before invoking this class.
+ * BLE transport. Callers handle permissions and confirmation dialogs.
+ *
+ * Reads: Modbus 0x03, documented in the user's own Android capture.
+ * MOS: Modbus 0x06 on 0xA5/0xA6, documented on the same Daly2 family but
+ * NOT yet corroborated on this exact unit. Never silently retry writes.
+ * A valid write echo is NOT success: only a subsequent status READ verifies state.
  */
 @SuppressLint("MissingPermission")
 class BmsBleClient(private val context: Context, private val listener: Listener) {
@@ -30,6 +33,7 @@ class BmsBleClient(private val context: Context, private val listener: Listener)
         fun onSnapshot(snapshot: BatterySnapshot)
         fun onCapacity(capacityAh: Double)
         fun onError(message: String)
+        fun onMosResult(switch: MosSwitch, desiredOn: Boolean, ok: Boolean, message: String)
     }
 
     data class FoundDevice(val device: BluetoothDevice, val label: String, val address: String, val rssi: Int)
@@ -41,29 +45,113 @@ class BmsBleClient(private val context: Context, private val listener: Listener)
     private var scanner: BluetoothLeScanner? = null
     private var gatt: BluetoothGatt? = null
     private var tx: BluetoothGattCharacteristic? = null
+    private var connected = false
     private var polling = false
     private var tick = 0
     private val found = mutableSetOf<String>()
     private var onFound: ((FoundDevice) -> Unit)? = null
     private var onScanFinished: (() -> Unit)? = null
+    private var lastSnapshot: BatterySnapshot? = null
+
+    private data class PendingMos(
+        val switch: MosSwitch,
+        val desiredOn: Boolean,
+        val bytes: ByteArray,
+        var acknowledged: Boolean = false,
+        var readAfterAck: Boolean = false
+    )
+    private var pendingMos: PendingMos? = null
 
     private val notifyUuid = UUID.fromString("0000fff1-0000-1000-8000-00805f9b34fb")
     private val writeUuid = UUID.fromString("0000fff2-0000-1000-8000-00805f9b34fb")
     private val serviceUuid = UUID.fromString("0000fff0-0000-1000-8000-00805f9b34fb")
     private val cccdUuid = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
 
-    private val assembler = ModbusFrameAssembler { payload ->
+    private val assembler = ModbusFrameAssembler(
+        onPayload = { payload -> main.post { onFrame(payload) } },
+        onWriteEcho = { echo -> main.post { onWriteEcho(echo) } },
+        onWriteException = { code -> main.post { failMos("BMS : commande rejetée (Modbus $code)") } }
+    )
+
+    private fun onFrame(payload: ByteArray) {
+        if (!connected) return
         if (payload.size == 124) {
-            try {
-                val sample = BmsProtocol.decodeStatus(payload)
-                main.post { listener.onSnapshot(sample) }
-            } catch (ex: IllegalArgumentException) {
-                main.post { listener.onError("Trame rejetée : ${ex.message}") }
+            val sample = try { BmsProtocol.decodeStatus(payload) }
+            catch (e: IllegalArgumentException) {
+                listener.onError("Trame rejetée : ${e.message}")
+                return
             }
-        } else {
-            val capacity = BmsProtocol.decodeCapacity(payload)
-            if (capacity != null) main.post { listener.onCapacity(capacity) }
+            lastSnapshot = sample
+            listener.onSnapshot(sample)
+            val request = pendingMos
+            if (request != null && request.acknowledged && request.readAfterAck) {
+                val observed = if (request.switch == MosSwitch.CHARGE)
+                    sample.chargingAllowed else sample.dischargingAllowed
+                if (observed == request.desiredOn) {
+                    completeMos(true, "État confirmé par une nouvelle lecture du BMS")
+                }
+            }
+        } else if (payload.size == 82) {
+            BmsProtocol.decodeCapacity(payload)?.let(listener::onCapacity)
         }
+    }
+
+    private fun onWriteEcho(echo: ByteArray) {
+        val request = pendingMos ?: return
+        if (!echo.contentEquals(request.bytes)) return
+        request.acknowledged = true
+        main.removeCallbacks(pollRunnable)
+        main.postDelayed(verifyRunnable, 350L)
+    }
+
+    private val verifyRunnable = object : Runnable {
+        override fun run() {
+            val request = pendingMos ?: return
+            if (!request.acknowledged || !connected) return
+            if (writeCommand(BmsProtocol.statusRequest)) {
+                request.readAfterAck = true
+                main.postDelayed(this, 1_800L)
+            } else failMos("Impossible de relire l'état du BMS")
+        }
+    }
+
+    private val mosTimeout = Runnable {
+        if (pendingMos != null) failMos("Pas de confirmation fiable du BMS après 12 s")
+    }
+
+    private fun completeMos(ok: Boolean, message: String) {
+        val request = pendingMos ?: return
+        pendingMos = null
+        main.removeCallbacks(verifyRunnable)
+        main.removeCallbacks(mosTimeout)
+        listener.onMosResult(request.switch, request.desiredOn, ok, message)
+        if (connected && polling) main.postDelayed(pollRunnable, 500L)
+    }
+
+    private fun failMos(message: String) = completeMos(false, message)
+
+    /**
+     * Execute only following an explicit user dialog confirmation. One write max;
+     * any timeout or disconnect is reported as unknown state, never retried.
+     */
+    fun setMos(switch: MosSwitch, enabled: Boolean): Boolean {
+        if (!connected || !polling || tx == null || pendingMos != null) return false
+        val fresh = lastSnapshot?.takeIf { System.currentTimeMillis() - it.timestampMs < 15_000L }
+            ?: return false
+        val observed = if (switch == MosSwitch.CHARGE) fresh.chargingAllowed else fresh.dischargingAllowed
+        if (observed == enabled) {
+            listener.onMosResult(switch, enabled, true, "Déjà dans l'état demandé")
+            return true
+        }
+        val bytes = BmsProtocol.mosWriteRequest(switch, enabled)
+        main.removeCallbacks(pollRunnable)
+        pendingMos = PendingMos(switch, enabled, bytes)
+        if (!writeCommand(bytes)) {
+            failMos("Écriture Bluetooth impossible")
+            return false
+        }
+        main.postDelayed(mosTimeout, 12_000L)
+        return true
     }
 
     private val scanCallback = object : ScanCallback() {
@@ -73,13 +161,16 @@ class BmsBleClient(private val context: Context, private val listener: Listener)
                 val name = result.scanRecord?.deviceName
                     ?: runCatching { result.device.name }.getOrNull()
                     ?: "Appareil sans nom"
-                main.post { onFound?.invoke(FoundDevice(result.device, name, address, result.rssi)) }
+                val entry = FoundDevice(result.device, name, address, result.rssi)
+                main.post { onFound?.invoke(entry) }
             }
         }
 
         override fun onScanFailed(errorCode: Int) {
-            main.post { listener.onError("Recherche BLE impossible (code $errorCode)") }
-            stopScan()
+            main.post {
+                listener.onError("Recherche BLE impossible (code $errorCode)")
+                stopScan()
+            }
         }
     }
 
@@ -94,12 +185,14 @@ class BmsBleClient(private val context: Context, private val listener: Listener)
             scanner = adapter?.bluetoothLeScanner
             if (scanner == null) {
                 listener.onError("Bluetooth indisponible ou désactivé")
+                stopScan()
                 return
             }
             scanner?.startScan(scanCallback)
             main.postDelayed(stopScanTask, 15_000L)
         } catch (ex: Exception) {
             listener.onError("Impossible de scanner : ${ex.localizedMessage}")
+            stopScan()
         }
     }
 
@@ -108,118 +201,136 @@ class BmsBleClient(private val context: Context, private val listener: Listener)
         runCatching { scanner?.stopScan(scanCallback) }
         scanner = null
         val completed = onScanFinished
-        main.post { completed?.invoke() }
         onFound = null
         onScanFinished = null
+        completed?.invoke()
     }
 
     fun connect(device: BluetoothDevice) {
         stopScan()
-        disconnect()
+        // Release previous link without generating a false disconnection event.
+        dropGatt()
         assembler.clear()
         listener.onState("Connexion au BMS…", false)
         try {
             gatt = device.connectGatt(context, false, callback, BluetoothDevice.TRANSPORT_LE)
         } catch (ex: Exception) {
             listener.onError("Connexion impossible : ${ex.localizedMessage}")
+            listener.onState("Déconnecté", false)
+        }
+    }
+
+    private fun writeCommand(command: ByteArray): Boolean {
+        val activeGatt = gatt ?: return false
+        val characteristic = tx ?: return false
+        return try {
+            if (Build.VERSION.SDK_INT >= 33) {
+                activeGatt.writeCharacteristic(
+                    characteristic, command,
+                    BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
+                ) == BluetoothGatt.GATT_SUCCESS
+            } else {
+                characteristic.writeType = BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
+                @Suppress("DEPRECATION")
+                characteristic.value = command
+                @Suppress("DEPRECATION")
+                activeGatt.writeCharacteristic(characteristic)
+            }
+        } catch (ex: Exception) {
+            listener.onError("Bluetooth : ${ex.localizedMessage}")
+            false
         }
     }
 
     private val pollRunnable = object : Runnable {
         override fun run() {
-            if (!polling) return
-            val activeGatt = gatt
-            val characteristic = tx
-            if (activeGatt != null && characteristic != null) {
-                val command = if (tick > 0 && tick % 8 == 0) {
-                    BmsProtocol.capacityRequest
-                } else BmsProtocol.statusRequest
-                tick++
-                try {
-                    if (Build.VERSION.SDK_INT >= 33) {
-                        val result = activeGatt.writeCharacteristic(
-                            characteristic, command, BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
-                        )
-                        if (result != BluetoothGatt.GATT_SUCCESS) {
-                            listener.onError("Écriture BLE refusée ($result)")
-                        }
-                    } else {
-                        characteristic.writeType = BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
-                        @Suppress("DEPRECATION")
-                        characteristic.value = command
-                        @Suppress("DEPRECATION")
-                        val ok = activeGatt.writeCharacteristic(characteristic)
-                        if (!ok) listener.onError("Commande de lecture non transmise")
-                    }
-                } catch (ex: Exception) {
-                    main.post { listener.onError("Lecture interrompue : ${ex.localizedMessage}") }
-                }
-                main.postDelayed(this, 5_000L)
-            }
+            if (!polling || !connected || pendingMos != null) return
+            val command = if (tick > 0 && tick % 8 == 0)
+                BmsProtocol.capacityRequest else BmsProtocol.statusRequest
+            tick++
+            if (!writeCommand(command)) listener.onError("Échec de lecture BLE")
+            main.postDelayed(this, 5_000L)
         }
     }
 
     private val callback = object : BluetoothGattCallback() {
         override fun onConnectionStateChange(active: BluetoothGatt, status: Int, newState: Int) {
-            if (newState == BluetoothProfile.STATE_CONNECTED && status == BluetoothGatt.GATT_SUCCESS) {
-                main.post { listener.onState("Découverte des services…", false) }
-                active.discoverServices()
-            } else {
-                polling = false
-                main.removeCallbacks(pollRunnable)
-                active.close()
-                if (gatt === active) gatt = null
-                tx = null
-                main.post { listener.onState("Déconnecté", false) }
-                if (status != BluetoothGatt.GATT_SUCCESS) {
-                    main.post { listener.onError("Liaison perdue (GATT $status)") }
+            main.post {
+                if (gatt !== active) { runCatching { active.close() }; return@post }
+                if (newState == BluetoothProfile.STATE_CONNECTED &&
+                    status == BluetoothGatt.GATT_SUCCESS) {
+                    listener.onState("Découverte des services…", false)
+                    if (!active.discoverServices()) {
+                        listener.onError("Découverte BLE impossible")
+                        disconnect()
+                    }
+                } else {
+                    if (pendingMos != null) failMos("Liaison coupée : état MOS non confirmé")
+                    dropGatt()
+                    listener.onState("Déconnecté", false)
+                    if (status != BluetoothGatt.GATT_SUCCESS)
+                        listener.onError("Liaison perdue (GATT $status)")
                 }
             }
         }
 
         override fun onServicesDiscovered(active: BluetoothGatt, status: Int) {
-            if (status != BluetoothGatt.GATT_SUCCESS) {
-                main.post { listener.onError("Services indisponibles ($status)") }
-                return
+            main.post {
+                if (gatt !== active) return@post
+                if (status != BluetoothGatt.GATT_SUCCESS) {
+                    listener.onError("Services indisponibles ($status)")
+                    disconnect()
+                    return@post
+                }
+                val service = active.getService(serviceUuid)
+                val rx = service?.getCharacteristic(notifyUuid)
+                tx = service?.getCharacteristic(writeUuid)
+                if (rx == null || tx == null) {
+                    listener.onError("Services FFF1 / FFF2 introuvables")
+                    disconnect()
+                    return@post
+                }
+                if (!active.setCharacteristicNotification(rx, true)) {
+                    listener.onError("Activation des notifications impossible")
+                    disconnect()
+                    return@post
+                }
+                val cccd = rx.getDescriptor(cccdUuid)
+                if (cccd == null) {
+                    listener.onError("Descripteur de notifications introuvable")
+                    disconnect()
+                    return@post
+                }
+                val accepted = if (Build.VERSION.SDK_INT >= 33) {
+                    active.writeDescriptor(cccd, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE) ==
+                        BluetoothGatt.GATT_SUCCESS
+                } else {
+                    @Suppress("DEPRECATION")
+                    cccd.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+                    @Suppress("DEPRECATION")
+                    active.writeDescriptor(cccd)
+                }
+                if (!accepted) {
+                    listener.onError("Abonnement BLE refusé")
+                    disconnect()
+                }
             }
-            val service = active.getService(serviceUuid)
-            val rx = service?.getCharacteristic(notifyUuid)
-            tx = service?.getCharacteristic(writeUuid)
-            if (rx == null || tx == null) {
-                main.post { listener.onError("Services FFF1 / FFF2 introuvables") }
-                return
-            }
-            if (!active.setCharacteristicNotification(rx, true)) {
-                main.post { listener.onError("Activation des notifications impossible") }
-                return
-            }
-            val cccd = rx.getDescriptor(cccdUuid)
-            if (cccd == null) {
-                main.post { listener.onError("Descripteur de notifications introuvable") }
-                return
-            }
-            val success = if (Build.VERSION.SDK_INT >= 33) {
-                active.writeDescriptor(cccd, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE) == BluetoothGatt.GATT_SUCCESS
-            } else {
-                @Suppress("DEPRECATION")
-                cccd.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
-                @Suppress("DEPRECATION")
-                active.writeDescriptor(cccd)
-            }
-            if (!success) main.post { listener.onError("Abonnement BLE refusé") }
         }
 
         override fun onDescriptorWrite(active: BluetoothGatt, descriptor: BluetoothGattDescriptor, status: Int) {
-            if (descriptor.uuid != cccdUuid) return
-            if (status != BluetoothGatt.GATT_SUCCESS) {
-                main.post { listener.onError("Notifications BLE refusées ($status)") }
-                return
-            }
-            polling = true
-            tick = 0
-            main.removeCallbacks(pollRunnable)
             main.post {
+                if (gatt !== active || descriptor.uuid != cccdUuid) return@post
+                if (status != BluetoothGatt.GATT_SUCCESS) {
+                    listener.onError("Notifications BLE refusées ($status)")
+                    disconnect()
+                    return@post
+                }
+                connected = true
+                polling = true
+                tick = 0
+                lastSnapshot = null
                 listener.onState("Mesures en direct", true)
+                main.removeCallbacks(pollRunnable)
                 pollRunnable.run()
             }
         }
@@ -228,27 +339,41 @@ class BmsBleClient(private val context: Context, private val listener: Listener)
         override fun onCharacteristicChanged(active: BluetoothGatt, characteristic: BluetoothGattCharacteristic) {
             if (characteristic.uuid == notifyUuid) {
                 @Suppress("DEPRECATION")
-                val value = characteristic.value ?: return
-                assembler.offer(value)
+                val bytes = characteristic.value?.clone() ?: return
+                main.post { if (gatt === active) assembler.offer(bytes) }
             }
         }
 
         override fun onCharacteristicChanged(
             active: BluetoothGatt, characteristic: BluetoothGattCharacteristic, value: ByteArray
         ) {
-            if (characteristic.uuid == notifyUuid) assembler.offer(value)
+            if (characteristic.uuid == notifyUuid) {
+                val bytes = value.clone()
+                main.post { if (gatt === active) assembler.offer(bytes) }
+            }
+        }
+    }
+
+    private fun dropGatt() {
+        main.removeCallbacks(pollRunnable)
+        main.removeCallbacks(verifyRunnable)
+        main.removeCallbacks(mosTimeout)
+        polling = false
+        connected = false
+        lastSnapshot = null
+        pendingMos = null
+        tx = null
+        val old = gatt
+        gatt = null
+        old?.let {
+            runCatching { it.disconnect() }
+            runCatching { it.close() }
         }
     }
 
     fun disconnect() {
-        polling = false
-        main.removeCallbacks(pollRunnable)
-        tx = null
-        gatt?.let { active ->
-            gatt = null
-            runCatching { active.disconnect() }
-            runCatching { active.close() }
-        }
+        if (pendingMos != null) failMos("Déconnexion : état MOS non confirmé")
+        dropGatt()
         listener.onState("Déconnecté", false)
     }
 
