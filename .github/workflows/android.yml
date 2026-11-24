@@ -1,7 +1,7 @@
 name: Android · build & tests
 on:
   push:
-    branches: [main, feature/boucan-battery-monitor-android]
+    branches: [main, 'feature/**']
   workflow_dispatch:
 concurrency:
   group: android-${{ github.ref }}
