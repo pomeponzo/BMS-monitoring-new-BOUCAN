@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp"
+    android:viewportWidth="108" android:viewportHeight="108">
+    <!-- Four cells and a single flowing contour: no monogram, no lettermark. -->
+    <path android:fillColor="#F1EEE4" android:pathData="M28,33 L45,33 L45,42 L28,42 Z M48,33 L65,33 L65,42 L48,42 Z M28,46 L45,46 L45,55 L28,55 Z M48,46 L65,46 L65,55 L48,55 Z"/>
+    <path android:fillColor="#D58A57" android:pathData="M68,33 L77,33 L77,55 L68,55 Z"/>
+    <path android:strokeColor="#F1EEE4" android:strokeWidth="3" android:strokeLineCap="round"
+        android:fillColor="@android:color/transparent"
+        android:pathData="M27,69 C38,61 46,77 57,69 S76,61 81,68"/>
+</vector>
