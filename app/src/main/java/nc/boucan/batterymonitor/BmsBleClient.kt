@@ -48,7 +48,7 @@ class BmsBleClient(private val context: Context, private val listener: Listener)
     private var connected = false
     private var polling = false
     private var tick = 0
-    private val found = mutableSetOf<String>()
+    private val found = mutableMapOf<String, String>()
     private var onFound: ((FoundDevice) -> Unit)? = null
     private var onScanFinished: (() -> Unit)? = null
     private var lastSnapshot: BatterySnapshot? = null
@@ -122,6 +122,7 @@ class BmsBleClient(private val context: Context, private val listener: Listener)
     private fun completeMos(ok: Boolean, message: String) {
         val request = pendingMos ?: return
         pendingMos = null
+        if (!ok) lastSnapshot = null // stale or uncertain state must be read anew
         main.removeCallbacks(verifyRunnable)
         main.removeCallbacks(mosTimeout)
         listener.onMosResult(request.switch, request.desiredOn, ok, message)
@@ -157,10 +158,14 @@ class BmsBleClient(private val context: Context, private val listener: Listener)
     private val scanCallback = object : ScanCallback() {
         override fun onScanResult(callbackType: Int, result: ScanResult) {
             val address = result.device.address
-            if (found.add(address)) {
-                val name = result.scanRecord?.deviceName
-                    ?: runCatching { result.device.name }.getOrNull()
-                    ?: "Appareil sans nom"
+            val name = result.scanRecord?.deviceName
+                ?: runCatching { result.device.name }.getOrNull()
+                ?: "Appareil sans nom"
+            val previous = found[address]
+            // Some devices broadcast their name only in scan responses: do not
+            // permanently discard a battery after an unnamed first advertisement.
+            if (previous == null || (previous == "Appareil sans nom" && name != previous)) {
+                found[address] = name
                 val entry = FoundDevice(result.device, name, address, result.rssi)
                 main.post { onFound?.invoke(entry) }
             }
