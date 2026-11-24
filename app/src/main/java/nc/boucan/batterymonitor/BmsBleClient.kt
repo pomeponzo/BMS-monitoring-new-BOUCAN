@@ -107,7 +107,8 @@ class BmsBleClient(private val context: Context, private val listener: Listener)
         main.removeCallbacks(stopScanTask)
         runCatching { scanner?.stopScan(scanCallback) }
         scanner = null
-        main.post { onScanFinished?.invoke() }
+        val completed = onScanFinished
+        main.post { completed?.invoke() }
         onFound = null
         onScanFinished = null
     }
