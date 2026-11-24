@@ -114,12 +114,16 @@ class MainActivity : Activity(), BmsBleClient.Listener {
         scanMatched = false
         ui.showState("RECHERCHE DE DL-BOUCAN…", false)
         val preferred = prefs.getString("last_address", null)
+        var fallbackNamed: BmsBleClient.FoundDevice? = null
         ble.startScan(
             onDevice = { found ->
                 if (!foreground || !autoEnabled || scanMatched) return@startScan
                 val remembered = preferred != null && found.address.equals(preferred, ignoreCase = true)
                 val named = found.label.trim().equals("DL-BOUCAN battery", ignoreCase = true)
-                if (remembered || named) {
+                if (preferred != null && named && !remembered) fallbackNamed = found
+                // Prefer the last connected device. Only fall back to its name
+                // after the full scan (BLE private addresses can rotate).
+                if (remembered || (preferred == null && named)) {
                     scanMatched = true
                     scanning = false
                     linking = true
@@ -130,8 +134,16 @@ class MainActivity : Activity(), BmsBleClient.Listener {
             onFinished = {
                 scanning = false
                 if (foreground && autoEnabled && !scanMatched && !linking && !ui.isConnected) {
-                    ui.showState("BATTERIE INTROUVABLE — NOUVEL ESSAI", false)
-                    scheduleRetry(10_000L)
+                    val candidate = fallbackNamed
+                    if (candidate != null) {
+                        scanMatched = true
+                        linking = true
+                        pendingAddress = candidate.address
+                        ble.connect(candidate.device)
+                    } else {
+                        ui.showState("BATTERIE INTROUVABLE — NOUVEL ESSAI", false)
+                        scheduleRetry(10_000L)
+                    }
                 }
             }
         )
