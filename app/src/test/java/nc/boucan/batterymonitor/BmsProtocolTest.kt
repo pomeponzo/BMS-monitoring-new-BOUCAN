@@ -74,4 +74,57 @@ class BmsProtocolTest {
         setU16(payload, 0, 2800)
         assertEquals(280.0, BmsProtocol.decodeCapacity(payload)!!, 0.0001)
     }
+
+    @Test fun verifiedDaly2MosFramesAreCanonical() {
+        assertArrayEquals(
+            BmsProtocol.fromHex("D20600A500008A4A"),
+            BmsProtocol.mosWriteRequest(MosSwitch.CHARGE, false)
+        )
+        assertArrayEquals(
+            BmsProtocol.fromHex("D20600A500014B8A"),
+            BmsProtocol.mosWriteRequest(MosSwitch.CHARGE, true)
+        )
+        assertArrayEquals(
+            BmsProtocol.fromHex("D20600A600007A4A"),
+            BmsProtocol.mosWriteRequest(MosSwitch.DISCHARGE, false)
+        )
+        assertArrayEquals(
+            BmsProtocol.fromHex("D20600A60001BB8A"),
+            BmsProtocol.mosWriteRequest(MosSwitch.DISCHARGE, true)
+        )
+    }
+
+    @Test fun segmentedMosEchoWithReadInSameNotification() {
+        val echo = BmsProtocol.mosWriteRequest(MosSwitch.CHARGE, false)
+        val writes = mutableListOf<ByteArray>()
+        val reads = mutableListOf<ByteArray>()
+        val parser = ModbusFrameAssembler({ reads += it }, { writes += it })
+        parser.offer(echo.copyOfRange(0, 3))
+        parser.offer(echo.copyOfRange(3, echo.size) + modbusFrame(statusPayload()))
+        assertEquals(1, writes.size)
+        assertArrayEquals(echo, writes[0])
+        assertEquals(1, reads.size)
+        assertArrayEquals(statusPayload(), reads[0])
+    }
+
+    @Test fun corruptMosEchoDoesNotAcknowledge() {
+        val writes = mutableListOf<ByteArray>()
+        val parser = ModbusFrameAssembler({}, { writes += it })
+        val invalid = BmsProtocol.mosWriteRequest(MosSwitch.DISCHARGE, false)
+        invalid[3] = (invalid[3].toInt() xor 0x01).toByte()
+        parser.offer(invalid)
+        assertTrue(writes.isEmpty())
+    }
+
+    @Test fun modbusWriteExceptionIsDecodedAfterCrcVerification() {
+        val errors = mutableListOf<Int>()
+        val parser = ModbusFrameAssembler({}, {}, { errors += it })
+        val bytes = BmsProtocol.fromHex("D28602")
+        val crc = BmsProtocol.crc16(bytes)
+        val message = bytes + byteArrayOf(crc.toByte(), (crc shr 8).toByte())
+        parser.offer(message.copyOfRange(0, 2))
+        parser.offer(message.copyOfRange(2, message.size))
+        assertEquals(listOf(2), errors)
+    }
+
 }
