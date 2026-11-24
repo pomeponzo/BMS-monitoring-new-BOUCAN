@@ -341,6 +341,7 @@ class DashboardUi(private val activity: Activity) {
 
     fun showMosResult(switch: MosSwitch, enabled: Boolean, ok: Boolean, message: String) {
         mosInProgress = null
+        if (!ok) lastReading = null // force fresh status before any further command
         mosFeedback.visibility = View.VISIBLE
         mosFeedback.setTextColor(if (ok) pine else clay)
         val target = if (enabled) "ACTIVÉE" else "DÉSACTIVÉE"
