@@ -2,8 +2,10 @@ name: Android · build & tests
 on:
   push:
     branches: [main, feature/boucan-battery-monitor-android]
-  pull_request:
   workflow_dispatch:
+concurrency:
+  group: android-${{ github.ref }}
+  cancel-in-progress: true
 permissions:
   contents: read
 env:
@@ -28,7 +30,7 @@ jobs:
         with:
           gradle-version: '8.11.1'
       - name: Test parser and build APK
-        run: ./gradlew --no-daemon :app:testDebugUnitTest :app:assembleDebug
+        run: gradle --no-daemon :app:testDebugUnitTest :app:assembleDebug
       - name: Publish installable debug APK
         uses: actions/upload-artifact@v4
         with:
