@@ -46,6 +46,9 @@ class DashboardUi(private val activity: Activity) {
         setBackgroundColor(chalk)
     }
     val connectButton: Button
+    var onMosAction: ((MosSwitch, Boolean) -> Unit)? = null
+    private var lastReading: BatterySnapshot? = null
+    private var mosInProgress: MosSwitch? = null
     var isConnected: Boolean = false
         private set
 
@@ -63,6 +66,9 @@ class DashboardUi(private val activity: Activity) {
     private val cellDelta: TextView
     private val chargeMos: TextView
     private val dischargeMos: TextView
+    private val chargeControl: Button
+    private val dischargeControl: Button
+    private val mosFeedback: TextView
     private val alarms: TextView
     private val updated: TextView
     private val trend: TrendLine
@@ -123,12 +129,15 @@ class DashboardUi(private val activity: Activity) {
         hero.addView(label("RÉSERVE D'ÉNERGIE", 11f, Color.rgb(176, 197, 181), bold = true, spacing = .14f))
         gap(hero, 15)
         val socRow = LinearLayout(activity).apply { gravity = Gravity.BOTTOM }
-        soc = label("—", 76f, offWhite, family = mono).apply { setSingleLine(true) }
+        soc = label("—", 62f, offWhite, family = mono).apply { setSingleLine(true) }
         socRow.addView(soc, LinearLayout.LayoutParams(0, -2, 1f))
         socCaption = label("%", 33f, clay, family = condensedBold).apply { gravity = Gravity.BOTTOM }
         socRow.addView(socCaption, LinearLayout.LayoutParams(dp(35), dp(66)))
         hero.addView(socRow)
         gap(hero, 3)
+        hero.addView(label("PRÉCISION TRANSMISE  /  0,1 %", 10f,
+            Color.rgb(175, 193, 180), spacing = .08f))
+        gap(hero, 11)
         socBar = ChargeSegments(activity)
         hero.addView(socBar, LinearLayout.LayoutParams(-1, dp(22)))
         gap(hero, 15)
@@ -189,15 +198,25 @@ class DashboardUi(private val activity: Activity) {
         page.addView(trend, LinearLayout.LayoutParams(-1, dp(153)))
         gap(page, 20)
 
-        section(page, "ÉTAT DU BMS", "05")
+        section(page, "ÉTAT & COMMANDES", "05")
         gap(page, 10)
         chargeMos = stateRow(page, "CHARGE AUTORISÉE")
+        chargeControl = mosButton(page, MosSwitch.CHARGE)
+        gap(page, 8)
         dischargeMos = stateRow(page, "DÉCHARGE AUTORISÉE")
+        dischargeControl = mosButton(page, MosSwitch.DISCHARGE)
+        gap(page, 12)
         alarms = stateRow(page, "ALARMES")
+        gap(page, 13)
+        page.addView(label("UNE CONFIRMATION EST REQUISE AVANT TOUT CHANGEMENT DE MOSFET.", 11f,
+            muted, spacing = .02f))
+        gap(page, 9)
+        mosFeedback = label("", 12f, ink).apply { visibility = View.GONE }
+        page.addView(mosFeedback)
         gap(page, 18)
         errors = label("", 12f, clay).apply { visibility = View.GONE }
         page.addView(errors)
-        updated = label("AUCUNE MESURE REÇUE   •   LECTURE SEULE", 10f, muted, spacing = .06f)
+        updated = label("AUCUNE MESURE REÇUE   •   ATTENTE DE CONNEXION", 10f, muted, spacing = .06f)
         page.addView(updated)
         gap(page, 14)
         page.addView(label("BOUCAN  /  LIAISON DIRECTE BLE  /  SANS CLOUD", 10f, muted, spacing = .08f))
@@ -264,19 +283,92 @@ class DashboardUi(private val activity: Activity) {
         return value
     }
 
+    private fun mosButton(parent: LinearLayout, switch: MosSwitch): Button {
+        val button = Button(activity).apply {
+            text = "ATTENTE DE MESURE"
+            textSize = 12f
+            letterSpacing = .08f
+            isAllCaps = false
+            typeface = condensedBold
+            setTextColor(ink)
+            background = GradientDrawable().apply {
+                setColor(chalk)
+                setStroke(dp(1), rule)
+                cornerRadius = dp(5).toFloat()
+            }
+            setPadding(dp(16), dp(7), dp(16), dp(7))
+            minimumHeight = 0
+            minHeight = 0
+            isEnabled = false
+            setOnClickListener {
+                val reading = lastReading ?: return@setOnClickListener
+                if (!isConnected || mosInProgress != null) return@setOnClickListener
+                val current = if (switch == MosSwitch.CHARGE)
+                    reading.chargingAllowed else reading.dischargingAllowed
+                onMosAction?.invoke(switch, !current)
+            }
+        }
+        parent.addView(button, LinearLayout.LayoutParams(-1, dp(43)))
+        return button
+    }
+
+    private fun refreshMosButtons() {
+        for (switch in MosSwitch.values()) {
+            val button = if (switch == MosSwitch.CHARGE) chargeControl else dischargeControl
+            val current = lastReading?.let {
+                if (switch == MosSwitch.CHARGE) it.chargingAllowed else it.dischargingAllowed
+            }
+            val active = current != null && isConnected && mosInProgress == null
+            button.isEnabled = active
+            button.alpha = if (active) 1f else .48f
+            val action = when {
+                mosInProgress == switch -> "ENVOI ET VÉRIFICATION…"
+                current == null -> "EN ATTENTE DU BMS"
+                current -> "COUPER LA ${switch.label.uppercase(Locale.FRANCE)}"
+                else -> "RÉACTIVER LA ${switch.label.uppercase(Locale.FRANCE)}"
+            }
+            button.text = action
+        }
+    }
+
+    fun showMosPending(switch: MosSwitch, enabled: Boolean) {
+        mosInProgress = switch
+        mosFeedback.visibility = View.VISIBLE
+        mosFeedback.setTextColor(muted)
+        mosFeedback.text = "${switch.label.uppercase(Locale.FRANCE)} : commande en cours, vérification du retour BMS…"
+        refreshMosButtons()
+    }
+
+    fun showMosResult(switch: MosSwitch, enabled: Boolean, ok: Boolean, message: String) {
+        mosInProgress = null
+        mosFeedback.visibility = View.VISIBLE
+        mosFeedback.setTextColor(if (ok) pine else clay)
+        val target = if (enabled) "ACTIVÉE" else "DÉSACTIVÉE"
+        mosFeedback.text = "${switch.label.uppercase(Locale.FRANCE)} $target : $message"
+        refreshMosButtons()
+    }
+
     fun showState(state: String, connected: Boolean) {
         isConnected = connected
         connectionStatus.text = if (connected) "●  EN DIRECT" else state.uppercase(Locale.FRANCE)
         connectionStatus.setTextColor(if (connected) pine else clay)
-        connectButton.text = if (connected) "DÉCONNECTER" else "CONNECTER"
-        connectButton.contentDescription = if (connected) "Déconnecter la batterie" else "Choisir une batterie Bluetooth"
+        connectButton.text = if (connected) "DÉCONNECTER" else "RECHERCHER"
+        if (!connected) {
+            lastReading = null
+            mosInProgress = null
+            updated.text = "HORS LIGNE   •   DERNIÈRES MESURES NON ACTUELLES"
+        }
+        refreshMosButtons()
+        connectButton.contentDescription = if (connected)
+            "Déconnecter la batterie" else "Relancer la recherche automatique. Appui long : sélection manuelle"
     }
 
     private fun fmt(value: Double, digits: Int = 1) =
         String.format(Locale.FRANCE, "%.${digits}f", value)
 
     fun showSnapshot(value: BatterySnapshot) {
-        soc.text = fmt(value.socPercent, 0)
+        lastReading = value
+        soc.text = fmt(value.socPercent, 1)
         socBar.level = value.socPercent.toFloat().coerceIn(0f, 100f)
         remaining.text = "${fmt(value.remainingAh)} Ah"
         voltage.text = fmt(value.voltageV, 2)
@@ -294,11 +386,12 @@ class DashboardUi(private val activity: Activity) {
         dischargeMos.setTextColor(if (value.dischargingAllowed) pine else clay)
         alarms.text = if (value.alarmBits == 0L) "AUCUNE" else BmsProtocol.alarmsAsHex(value.alarmBits)
         alarms.setTextColor(if (value.alarmBits == 0L) pine else clay)
+        refreshMosButtons()
         if (history.size == 90) history.removeAt(0)
         history.add(value.voltageV)
         trend.samples = history.toList()
         val format = SimpleDateFormat("HH:mm:ss", Locale.FRANCE)
-        updated.text = "ACTUALISÉ À ${format.format(Date(value.timestampMs))}   •   LECTURE SEULE"
+        updated.text = "ACTUALISÉ À ${format.format(Date(value.timestampMs))}   •   DONNÉES BMS"
         errors.visibility = View.GONE
     }
 
