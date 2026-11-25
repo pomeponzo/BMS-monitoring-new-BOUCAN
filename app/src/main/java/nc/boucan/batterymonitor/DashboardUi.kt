@@ -84,12 +84,12 @@ class DashboardUi(private val activity: Activity) {
         header.addView(symbol, LinearLayout.LayoutParams(dp(31), dp(38)).apply { rightMargin = dp(13) })
         val titleBox = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL }
         titleBox.addView(label("BOUCAN", 23f, ink, bold = true, spacing = 0.10f))
-        titleBox.addView(label("BATTERY MONITOR    /    12 V", 10f, muted, spacing = 0.13f))
+        titleBox.addView(label("Battery monitor", 10f, muted, spacing = 0.13f))
         header.addView(titleBox, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
         connectButton = Button(activity).apply {
-            text = "CONNECTER"
+            text = "Connecter"
             textSize = 11f
-            letterSpacing = 0.08f
+            letterSpacing = 0f
             isAllCaps = false
             typeface = condensedBold
             setTextColor(offWhite)
@@ -113,10 +113,8 @@ class DashboardUi(private val activity: Activity) {
         root.addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f))
 
         val mast = LinearLayout(activity).apply { gravity = Gravity.CENTER_VERTICAL }
-        mast.addView(label("TABLEAU DE BORD    /    01", 11f, muted, bold = true, spacing = .12f),
-            LinearLayout.LayoutParams(0, -2, 1f))
-        connectionStatus = label("HORS LIGNE", 10f, clay, bold = true, spacing = .08f)
-        mast.addView(connectionStatus)
+        connectionStatus = label("Hors ligne", 10f, clay, bold = true, spacing = 0f)
+        mast.addView(connectionStatus, LinearLayout.LayoutParams(-1, -2))
         page.addView(mast)
         gap(page, 15)
 
@@ -126,7 +124,7 @@ class DashboardUi(private val activity: Activity) {
             background = shape(ink, 9f)
             setPadding(dp(22), dp(20), dp(22), dp(20))
         }
-        hero.addView(label("RÉSERVE D'ÉNERGIE", 11f, Color.rgb(176, 197, 181), bold = true, spacing = .14f))
+        hero.addView(label("Charge", 11f, Color.rgb(176, 197, 181), bold = true, spacing = 0f))
         gap(hero, 15)
         val socRow = LinearLayout(activity).apply { gravity = Gravity.BOTTOM }
         soc = label("—", 62f, offWhite, family = mono).apply { setSingleLine(true) }
@@ -135,8 +133,6 @@ class DashboardUi(private val activity: Activity) {
         socRow.addView(socCaption, LinearLayout.LayoutParams(dp(35), dp(66)))
         hero.addView(socRow)
         gap(hero, 3)
-        hero.addView(label("PRÉCISION TRANSMISE  /  0,1 %", 10f,
-            Color.rgb(175, 193, 180), spacing = .08f))
         gap(hero, 11)
         socBar = ChargeSegments(activity)
         hero.addView(socBar, LinearLayout.LayoutParams(-1, dp(22)))
@@ -146,80 +142,77 @@ class DashboardUi(private val activity: Activity) {
         gap(hero, 14)
         val capRow = LinearLayout(activity)
         val remainingCol = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL }
-        remainingCol.addView(label("CAPACITÉ RESTANTE", 10f, Color.rgb(175, 193, 180), spacing = .10f))
+        remainingCol.addView(label("Restant", 10f, Color.rgb(175, 193, 180), spacing = 0f))
         remaining = label("— Ah", 23f, offWhite, family = mono)
         remainingCol.addView(remaining)
         capRow.addView(remainingCol, LinearLayout.LayoutParams(0, -2, 1f))
         val configCol = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL }
-        configCol.addView(label("BMS CONFIGURÉ", 10f, Color.rgb(175, 193, 180), spacing = .10f))
+        configCol.addView(label("Capacité configurée", 10f, Color.rgb(175, 193, 180), spacing = 0f))
         configured = label("— Ah", 23f, offWhite, family = mono)
         configCol.addView(configured)
         capRow.addView(configCol)
         hero.addView(capRow)
         page.addView(hero)
-        gap(page, 29)
+        gap(page, 23)
 
-        section(page, "MESURES INSTANTANÉES", "02")
+        section(page, "Mesures")
         gap(page, 6)
         val rowOne = LinearLayout(activity)
-        val voltBlock = metric("TENSION PACK", "V")
+        val voltBlock = metric("Tension", "V")
         voltage = voltBlock.second
         rowOne.addView(voltBlock.first, LinearLayout.LayoutParams(0, -2, 1f))
-        val currentBlock = metric("COURANT", "A")
+        val currentBlock = metric("Courant", "A")
         current = currentBlock.second
         rowOne.addView(currentBlock.first, LinearLayout.LayoutParams(0, -2, 1f))
         page.addView(rowOne)
         page.addView(separator(), LinearLayout.LayoutParams(-1, dp(1)))
         gap(page, 16)
         val rowTwo = LinearLayout(activity)
-        val powerBlock = metric("PUISSANCE", "W")
+        val powerBlock = metric("Puissance", "W")
         power = powerBlock.second
         rowTwo.addView(powerBlock.first, LinearLayout.LayoutParams(0, -2, 1f))
-        val tempBlock = metric("TEMPÉRATURE", "°C")
+        val tempBlock = metric("Température", "°C")
         temperature = tempBlock.second
         rowTwo.addView(tempBlock.first, LinearLayout.LayoutParams(0, -2, 1f))
         page.addView(rowTwo)
         gap(page, 23)
 
-        section(page, "ÉQUILIBRAGE DES CELLULES", "03")
+        section(page, "Cellules")
         gap(page, 8)
-        cellDelta = label("ÉCART MAX.     — mV", 11f, muted, family = mono)
+        cellDelta = label("Écart : — mV", 11f, muted, family = mono)
         page.addView(cellDelta)
         gap(page, 9)
         cellBars = CellRows(activity)
-        page.addView(cellBars, LinearLayout.LayoutParams(-1, dp(182)))
+        page.addView(cellBars, LinearLayout.LayoutParams(-1, dp(144)))
         gap(page, 16)
 
-        section(page, "HISTORIQUE LOCAL", "04")
+        section(page, "Historique")
         gap(page, 12)
-        page.addView(label("TENSION    /    DERNIÈRES 90 LECTURES", 10f, muted, spacing = .11f))
+        page.addView(label("Tension", 10f, muted, spacing = 0f))
         gap(page, 10)
         trend = TrendLine(activity)
-        page.addView(trend, LinearLayout.LayoutParams(-1, dp(153)))
+        page.addView(trend, LinearLayout.LayoutParams(-1, dp(125)))
         gap(page, 20)
 
-        section(page, "ÉTAT & COMMANDES", "05")
+        section(page, "Commandes")
         gap(page, 10)
-        chargeMos = stateRow(page, "CHARGE AUTORISÉE")
+        chargeMos = stateRow(page, "Charge")
         chargeControl = mosButton(page, MosSwitch.CHARGE)
         gap(page, 8)
-        dischargeMos = stateRow(page, "DÉCHARGE AUTORISÉE")
+        dischargeMos = stateRow(page, "DÉCharge")
         dischargeControl = mosButton(page, MosSwitch.DISCHARGE)
         gap(page, 12)
-        alarms = stateRow(page, "ALARMES")
+        alarms = stateRow(page, "Alarmes")
         gap(page, 13)
-        page.addView(label("UNE CONFIRMATION EST REQUISE AVANT TOUT CHANGEMENT DE MOSFET.", 11f,
-            muted, spacing = .02f))
         gap(page, 9)
         mosFeedback = label("", 12f, ink).apply { visibility = View.GONE }
         page.addView(mosFeedback)
         gap(page, 18)
         errors = label("", 12f, clay).apply { visibility = View.GONE }
         page.addView(errors)
-        updated = label("AUCUNE MESURE REÇUE   •   ATTENTE DE CONNEXION", 10f, muted, spacing = .06f)
+        updated = label("En attente de connexion", 10f, muted, spacing = .06f)
         page.addView(updated)
         gap(page, 14)
-        page.addView(label("BOUCAN  /  LIAISON DIRECTE BLE  /  SANS CLOUD", 10f, muted, spacing = .08f))
     }
 
     private fun dp(value: Int) = (value * activity.resources.displayMetrics.density).roundToInt()
@@ -245,11 +238,10 @@ class DashboardUi(private val activity: Activity) {
     private fun gap(parent: LinearLayout, height: Int) =
         parent.addView(View(activity), LinearLayout.LayoutParams(1, dp(height)))
 
-    private fun section(parent: LinearLayout, name: String, number: String) {
+    private fun section(parent: LinearLayout, name: String) {
         val row = LinearLayout(activity).apply { gravity = Gravity.CENTER_VERTICAL }
-        row.addView(label(name, 16f, ink, bold = true, spacing = .04f),
+        row.addView(label(name, 19f, ink, bold = true, spacing = 0f),
             LinearLayout.LayoutParams(0, -2, 1f))
-        row.addView(label(number, 12f, clay, family = mono))
         parent.addView(row)
         gap(parent, 12)
         parent.addView(separator(), LinearLayout.LayoutParams(-1, dp(1)))
@@ -260,7 +252,7 @@ class DashboardUi(private val activity: Activity) {
             orientation = LinearLayout.VERTICAL
             setPadding(0, dp(15), dp(8), dp(18))
         }
-        box.addView(label(title, 10f, muted, bold = true, spacing = .12f))
+        box.addView(label(title, 13f, muted, bold = true, spacing = 0f))
         gap(box, 11)
         val row = LinearLayout(activity).apply { gravity = Gravity.BOTTOM }
         val value = label("—", 32f, ink, family = mono)
@@ -275,7 +267,7 @@ class DashboardUi(private val activity: Activity) {
             gravity = Gravity.CENTER_VERTICAL
             setPadding(0, dp(12), 0, dp(12))
         }
-        row.addView(label(heading, 11f, muted, spacing = .09f), LinearLayout.LayoutParams(0, -2, 1f))
+        row.addView(label(heading, 14f, muted, spacing = 0f), LinearLayout.LayoutParams(0, -2, 1f))
         val value = label("—", 12f, muted, bold = true)
         row.addView(value)
         parent.addView(row)
@@ -285,9 +277,9 @@ class DashboardUi(private val activity: Activity) {
 
     private fun mosButton(parent: LinearLayout, switch: MosSwitch): Button {
         val button = Button(activity).apply {
-            text = "ATTENTE DE MESURE"
+            text = "En attente"
             textSize = 12f
-            letterSpacing = .08f
+            letterSpacing = 0f
             isAllCaps = false
             typeface = condensedBold
             setTextColor(ink)
@@ -322,10 +314,10 @@ class DashboardUi(private val activity: Activity) {
             button.isEnabled = active
             button.alpha = if (active) 1f else .48f
             val action = when {
-                mosInProgress == switch -> "ENVOI ET VÉRIFICATION…"
-                current == null -> "EN ATTENTE DU BMS"
-                current -> "COUPER LA ${switch.label.uppercase(Locale.FRANCE)}"
-                else -> "RÉACTIVER LA ${switch.label.uppercase(Locale.FRANCE)}"
+                mosInProgress == switch -> "Vérification…"
+                current == null -> "En attente"
+                current -> "Couper la ${switch.label}"
+                else -> "Réactiver la ${switch.label}"
             }
             button.text = action
         }
@@ -335,7 +327,7 @@ class DashboardUi(private val activity: Activity) {
         mosInProgress = switch
         mosFeedback.visibility = View.VISIBLE
         mosFeedback.setTextColor(muted)
-        mosFeedback.text = "${switch.label.uppercase(Locale.FRANCE)} : commande en cours, vérification du retour BMS…"
+        mosFeedback.text = "${switch.label} : vérification…"
         refreshMosButtons()
     }
 
@@ -345,19 +337,19 @@ class DashboardUi(private val activity: Activity) {
         mosFeedback.visibility = View.VISIBLE
         mosFeedback.setTextColor(if (ok) pine else clay)
         val target = if (enabled) "ACTIVÉE" else "DÉSACTIVÉE"
-        mosFeedback.text = "${switch.label.uppercase(Locale.FRANCE)} $target : $message"
+        mosFeedback.text = "${switch.label} $target : $message"
         refreshMosButtons()
     }
 
     fun showState(state: String, connected: Boolean) {
         isConnected = connected
-        connectionStatus.text = if (connected) "●  EN DIRECT" else state.uppercase(Locale.FRANCE)
+        connectionStatus.text = if (connected) "● Connecté" else state
         connectionStatus.setTextColor(if (connected) pine else clay)
-        connectButton.text = if (connected) "DÉCONNECTER" else "RECHERCHER"
+        connectButton.text = if (connected) "Déconnecter" else "Rechercher"
         if (!connected) {
             lastReading = null
             mosInProgress = null
-            updated.text = "HORS LIGNE   •   DERNIÈRES MESURES NON ACTUELLES"
+            updated.text = "Hors ligne · mesures anciennes"
         }
         refreshMosButtons()
         connectButton.contentDescription = if (connected)
@@ -378,28 +370,28 @@ class DashboardUi(private val activity: Activity) {
         temperature.text = value.temperaturesC.firstOrNull()?.toString() ?: "—"
         if (value.cellsMv.isNotEmpty()) {
             val delta = (value.cellsMv.maxOrNull() ?: 0) - (value.cellsMv.minOrNull() ?: 0)
-            cellDelta.text = "ÉCART MAX.     $delta mV"
+            cellDelta.text = "Écart : $delta mV"
         }
         cellBars.cells = value.cellsMv
-        chargeMos.text = if (value.chargingAllowed) "OUI" else "NON"
-        dischargeMos.text = if (value.dischargingAllowed) "OUI" else "NON"
+        chargeMos.text = if (value.chargingAllowed) "Autorisée" else "Coupée"
+        dischargeMos.text = if (value.dischargingAllowed) "Autorisée" else "Coupée"
         chargeMos.setTextColor(if (value.chargingAllowed) pine else clay)
         dischargeMos.setTextColor(if (value.dischargingAllowed) pine else clay)
-        alarms.text = if (value.alarmBits == 0L) "AUCUNE" else BmsProtocol.alarmsAsHex(value.alarmBits)
+        alarms.text = if (value.alarmBits == 0L) "Aucune" else BmsProtocol.alarmsAsHex(value.alarmBits)
         alarms.setTextColor(if (value.alarmBits == 0L) pine else clay)
         refreshMosButtons()
         if (history.size == 90) history.removeAt(0)
         history.add(value.voltageV)
         trend.samples = history.toList()
         val format = SimpleDateFormat("HH:mm:ss", Locale.FRANCE)
-        updated.text = "ACTUALISÉ À ${format.format(Date(value.timestampMs))}   •   DONNÉES BMS"
+        updated.text = "Mis à jour à ${format.format(Date(value.timestampMs))}"
         errors.visibility = View.GONE
     }
 
     fun showCapacity(ah: Double) { configured.text = "${fmt(ah, 0)} Ah" }
 
     fun showError(message: String) {
-        errors.text = "DIAGNOSTIC  /  $message"
+        errors.text = "$message"
         errors.visibility = View.VISIBLE
     }
 
@@ -448,7 +440,7 @@ class DashboardUi(private val activity: Activity) {
                 p.color = muted
                 p.textSize = dp(13).toFloat()
                 p.typeface = condensed
-                canvas.drawText("En attente des tensions individuelles…", 0f, height * .45f, p)
+                canvas.drawText("En attente de mesures", 0f, height * .45f, p)
                 return
             }
             val rows = min(cells.size, 8)
@@ -494,7 +486,7 @@ class DashboardUi(private val activity: Activity) {
                 p.color = muted
                 p.textSize = dp(12).toFloat()
                 p.typeface = condensed
-                canvas.drawText("Courbe disponible après deux lectures", left, height / 2f, p)
+                canvas.drawText("En attente de mesures", left, height / 2f, p)
                 return
             }
             val minV = samples.minOrNull() ?: 0.0
