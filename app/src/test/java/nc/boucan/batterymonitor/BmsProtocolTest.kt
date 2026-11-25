@@ -127,4 +127,34 @@ class BmsProtocolTest {
         assertEquals(listOf(2), errors)
     }
 
+    @Test fun journalRecordAndFragmentedAlternateAddress() {
+        val raw = ByteArray(133)
+        setU16(raw, 0, 1)
+        setU16(raw, 2, 12)
+        byteArrayOf(26, 11, 25, 15, 10, 0).copyInto(raw, 5)
+        setU16(raw, 13, 134)
+        setU16(raw, 15, 30046)
+        setU16(raw, 17, 857)
+        setU16(raw, 31, 3362)
+        val result = JournalProtocol.decode(raw)!!
+        assertEquals(12, result.count)
+        assertEquals(85.7, result.soc, 0.001)
+        assertEquals(4.6, result.current, 0.001)
+        assertEquals(listOf(3362), result.cells)
+        val prefix = byteArrayOf(0x51, 3, 133.toByte()) + raw
+        val crc = BmsProtocol.crc16(prefix)
+        val packet = prefix + byteArrayOf(crc.toByte(), (crc shr 8).toByte())
+        val entries = mutableListOf<JournalEntry>()
+        val parser = ModbusFrameAssembler(onPayload = {},
+            onJournalPayload = { address, payload ->
+                assertEquals(0x51, address)
+                JournalProtocol.decode(payload)?.let { entries.add(it) }
+            })
+        parser.offer(packet.copyOfRange(0, 20))
+        parser.offer(packet.copyOfRange(20, packet.size))
+        assertEquals(listOf(result), entries)
+        val request = JournalProtocol.request(1, 0x81)
+        assertArrayEquals(BmsProtocol.fromHex("810330010001"), request.copyOfRange(0, 6))
+        assertNull(JournalProtocol.decode(ByteArray(133)))
+    }
 }

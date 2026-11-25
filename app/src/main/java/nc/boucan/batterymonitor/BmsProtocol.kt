@@ -102,7 +102,8 @@ data class BatterySnapshot(
 class ModbusFrameAssembler(
     private val onPayload: (ByteArray) -> Unit,
     private val onWriteEcho: (ByteArray) -> Unit = {},
-    private val onWriteException: (Int) -> Unit = {}
+    private val onWriteException: (Int) -> Unit = {},
+    private val onJournalPayload: (Int, ByteArray) -> Unit = { _, _ -> }
 ) {
     private val bytes = ArrayList<Byte>(256)
 
@@ -112,11 +113,13 @@ class ModbusFrameAssembler(
         bytes.addAll(fragment.toList())
         if (bytes.size > 4096) bytes.subList(0, bytes.size - 512).clear()
         while (bytes.isNotEmpty()) {
-            val start = bytes.indexOfFirst { (it.toInt() and 0xFF) == 0xD2 }
+            val start = bytes.indexOfFirst { (it.toInt() and 0xFF) in listOf(0xD2, 0x51, 0x81) }
             if (start < 0) { bytes.clear(); return }
             if (start > 0) bytes.subList(0, start).clear()
             if (bytes.size < 2) return
+            val address = bytes[0].toInt() and 0xFF
             val function = bytes[1].toInt() and 0xFF
+            if (address != 0xD2 && function != 0x03 && function != 0x83) { bytes.removeAt(0); continue }
             val expected = when (function) {
                 0x03 -> {
                     if (bytes.size < 3) return
@@ -125,7 +128,7 @@ class ModbusFrameAssembler(
                     count + 5
                 }
                 0x06 -> 8
-                0x86 -> 5
+                0x86, 0x83 -> 5
                 else -> { bytes.removeAt(0); continue }
             }
             if (bytes.size < expected) return
@@ -138,7 +141,11 @@ class ModbusFrameAssembler(
             }
             bytes.subList(0, expected).clear()
             when (function) {
-                0x03 -> onPayload(packet.copyOfRange(3, expected - 2))
+                0x03 -> {
+                    val payload = packet.copyOfRange(3, expected - 2)
+                    if (payload.size == 133) onJournalPayload(address, payload)
+                    else if (address == 0xD2) onPayload(payload)
+                }
                 0x06 -> onWriteEcho(packet)
                 0x86 -> onWriteException(packet[2].toInt() and 0xFF)
             }

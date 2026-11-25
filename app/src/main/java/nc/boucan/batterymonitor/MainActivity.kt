@@ -31,6 +31,10 @@ class MainActivity : Activity(), BmsBleClient.Listener {
     private var bluetoothRequested = false
     private var autoPermissionRequested = false
     private val prefs by lazy { getSharedPreferences("boucan_link", MODE_PRIVATE) }
+    private val journalPrefs by lazy { getSharedPreferences("boucan_journal", MODE_PRIVATE) }
+    private var journalDevice: String? = null
+    private var journalMessage = "Hors ligne"
+    private val journal = linkedMapOf<String, JournalEntry>()
     private val autoRetry = Runnable { if (foreground && autoEnabled) attemptAutoConnection() }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -58,6 +62,9 @@ class MainActivity : Activity(), BmsBleClient.Listener {
             }
             true
         }
+        journalDevice = prefs.getString("last_address", null)
+        loadJournal()
+        ui.journalButton.setOnClickListener { openJournal() }
         ui.onMosAction = { switch, enabled -> confirmMosAction(switch, enabled) }
         ui.showState("RECHERCHE AUTOMATIQUE", false)
     }
@@ -157,6 +164,12 @@ class MainActivity : Activity(), BmsBleClient.Listener {
     @Suppress("DEPRECATION")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == 203 && resultCode == RESULT_OK) {
+            data?.data?.let { uri ->
+                runCatching { contentResolver.openOutputStream(uri)?.bufferedWriter()?.use { it.write(journalCsv()) } }
+                    .onFailure { onError("Export impossible : " + it.message) }
+            }
+        }
         if (requestCode == 202) {
             bluetoothRequested = false
             if (resultCode == RESULT_OK && autoEnabled) scheduleRetry(350L)
@@ -245,15 +258,81 @@ class MainActivity : Activity(), BmsBleClient.Listener {
             ui.showState(label, connected)
             if (connected) {
                 linking = false
-                pendingAddress?.let { prefs.edit().putString("last_address", it).apply() }
+                pendingAddress?.let {
+                    prefs.edit().putString("last_address", it).apply()
+                    if (journalDevice != it) { journalDevice = it; loadJournal() }
+                }
                 pendingAddress = null
                 main.removeCallbacks(autoRetry)
             } else if (label == "Déconnecté") {
+                onJournalState("Hors ligne")
                 linking = false
                 pendingAddress = null
                 if (autoEnabled) scheduleRetry(4_000L)
             }
         }
+    }
+
+    private fun loadJournal() {
+        journal.clear()
+        journalDevice?.let { device ->
+            journalPrefs.getStringSet(device, emptySet()).orEmpty().forEach { raw ->
+                runCatching { JournalProtocol.decode(BmsProtocol.fromHex(raw)) }.getOrNull()?.let {
+                    journal[it.key] = it
+                }
+            }
+        }
+        ui.showJournal(journalMessage, journal.size)
+    }
+
+    override fun onJournalEntry(entry: JournalEntry) {
+        if (journal.put(entry.key, entry) == null) {
+            journalDevice?.let { device ->
+                journalPrefs.edit().putStringSet(device, journal.values.map { it.raw }.toSet()).apply()
+            }
+        }
+        ui.showJournal(journalMessage, journal.size)
+    }
+
+    override fun onJournalState(message: String) {
+        journalMessage = message
+        ui.showJournal(message, journal.size)
+    }
+
+    private fun journalCsv(): String = buildString {
+        appendLine("date_bms;tension_V;courant_A;soc_pct;cellules_mV;temperatures_C;trame")
+        journal.values.sortedByDescending { it.date }.forEach {
+            appendLine(listOf(it.date, it.voltage, it.current, it.soc,
+                it.cells.joinToString("|"), it.temperatures.joinToString("|"), it.raw).joinToString(";"))
+        }
+    }
+
+    private fun openJournal() {
+        val entries = journal.values.sortedByDescending { it.date }
+        val rows = entries.map {
+            String.format(java.util.Locale.FRANCE, "%s\n%.1f %%   ·   %.1f V   ·   %.1f A",
+                it.date.replace("T", " "), it.soc, it.voltage, it.current)
+        }.toTypedArray()
+        val builder = AlertDialog.Builder(this).setTitle("Historique")
+            .setNegativeButton("Fermer", null)
+        if (entries.isEmpty()) builder.setMessage(journalMessage)
+        else {
+            builder.setItems(rows) { _, index ->
+                val e = entries[index]
+                AlertDialog.Builder(this).setTitle(e.date.replace("T", " "))
+                    .setMessage("Cellules : " + e.cells.joinToString(" / ") + " mV\nTempératures : " +
+                        e.temperatures.joinToString(" / ") + " °C")
+                    .setPositiveButton("Fermer", null).show()
+            }
+            builder.setNeutralButton("Exporter CSV") { _, _ ->
+                startActivityForResult(Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+                    addCategory(Intent.CATEGORY_OPENABLE)
+                    type = "text/csv"
+                    putExtra(Intent.EXTRA_TITLE, "Boucan-historique.csv")
+                }, 203)
+            }
+        }
+        builder.show()
     }
 
     override fun onSnapshot(snapshot: BatterySnapshot) {

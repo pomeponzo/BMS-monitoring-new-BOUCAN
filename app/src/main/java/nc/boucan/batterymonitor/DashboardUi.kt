@@ -71,9 +71,10 @@ class DashboardUi(private val activity: Activity) {
     private val mosFeedback: TextView
     private val alarms: TextView
     private val updated: TextView
-    private val trend: TrendLine
+    val journalButton: Button
+    private val journalStatus: TextView
     private val errors: TextView
-    private val history = ArrayList<Double>(90)
+
 
     init {
         val header = LinearLayout(activity).apply {
@@ -187,11 +188,14 @@ class DashboardUi(private val activity: Activity) {
         gap(page, 16)
 
         section(page, "Historique")
-        gap(page, 12)
-        page.addView(label("Tension", 10f, muted, spacing = 0f))
         gap(page, 10)
-        trend = TrendLine(activity)
-        page.addView(trend, LinearLayout.LayoutParams(-1, dp(125)))
+        journalStatus = label("En attente de connexion", 13f, muted)
+        page.addView(journalStatus)
+        journalButton = Button(activity).apply {
+            text = "Voir les événements"
+            isAllCaps = false
+        }
+        page.addView(journalButton, LinearLayout.LayoutParams(-1, dp(48)))
         gap(page, 20)
 
         section(page, "Commandes")
@@ -380,12 +384,13 @@ class DashboardUi(private val activity: Activity) {
         alarms.text = if (value.alarmBits == 0L) "Aucune" else BmsProtocol.alarmsAsHex(value.alarmBits)
         alarms.setTextColor(if (value.alarmBits == 0L) pine else clay)
         refreshMosButtons()
-        if (history.size == 90) history.removeAt(0)
-        history.add(value.voltageV)
-        trend.samples = history.toList()
         val format = SimpleDateFormat("HH:mm:ss", Locale.FRANCE)
         updated.text = "Mis à jour à ${format.format(Date(value.timestampMs))}"
         errors.visibility = View.GONE
+    }
+
+    fun showJournal(message: String, count: Int) {
+        journalStatus.text = if (count == 0) message else "$count événements · $message"
     }
 
     fun showCapacity(ah: Double) { configured.text = "${fmt(ah, 0)} Ah" }

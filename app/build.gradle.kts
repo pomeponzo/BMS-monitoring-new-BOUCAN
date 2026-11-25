@@ -9,8 +9,8 @@ android {
         applicationId = "nc.boucan.batterymonitor"
         minSdk = 26
         targetSdk = 34
-        versionCode = 3
-        versionName = "0.2.1"
+        versionCode = 4
+        versionName = "0.3.0"
         testInstrumentationRunner = "android.test.InstrumentationTestRunner"
     }
     buildTypes {

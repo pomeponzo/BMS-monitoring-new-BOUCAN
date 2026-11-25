@@ -32,6 +32,8 @@ class BmsBleClient(private val context: Context, private val listener: Listener)
         fun onState(label: String, connected: Boolean)
         fun onSnapshot(snapshot: BatterySnapshot)
         fun onCapacity(capacityAh: Double)
+        fun onJournalEntry(entry: JournalEntry)
+        fun onJournalState(message: String)
         fun onError(message: String)
         fun onMosResult(switch: MosSwitch, desiredOn: Boolean, ok: Boolean, message: String)
     }
@@ -61,6 +63,62 @@ class BmsBleClient(private val context: Context, private val listener: Listener)
         var readAfterAck: Boolean = false
     )
     private var pendingMos: PendingMos? = null
+    private var journalAddress = 0x81
+    private var journalIndex = 1
+    private var journalTotal = 0
+    private var journalWaiting = false
+    private var journalFailures = 0
+    private var journalDone = false
+    private val journalTimeout = Runnable {
+        if (journalWaiting) {
+            journalWaiting = false
+            journalFailures++
+            if (journalFailures >= 2) {
+                if (journalIndex == 1 && journalAddress == 0x81) {
+                    journalAddress = 0xD2
+                    journalFailures = 0
+                } else {
+                    journalDone = true
+                    listener.onJournalState(if (journalIndex == 1)
+                        "Historique non détecté" else "Synchronisation interrompue")
+                }
+            }
+        }
+    }
+    private val journalRead = Runnable {
+        if (connected && polling && pendingMos == null && !journalDone && !journalWaiting) {
+            journalWaiting = true
+            if (writeCommand(JournalProtocol.request(journalIndex, journalAddress))) {
+                main.postDelayed(journalTimeout, 2200L)
+            } else journalTimeout.run()
+        }
+    }
+    private fun onJournalFrame(address: Int, payload: ByteArray) {
+        if (!connected || !journalWaiting || pendingMos != null) return
+        if (journalAddress == 0x81 && address !in listOf(0x51, 0x81)) return
+        if (journalAddress == 0xD2 && address != 0xD2) return
+        val entry = JournalProtocol.decode(payload) ?: return
+        main.removeCallbacks(journalTimeout)
+        journalWaiting = false
+        journalFailures = 0
+        if (journalIndex == 1) journalTotal = entry.count
+        listener.onJournalEntry(entry)
+        listener.onJournalState("Synchronisation : $journalIndex/$journalTotal")
+        if (journalIndex >= journalTotal) {
+            journalDone = true
+            listener.onJournalState("Historique synchronisé")
+        } else journalIndex++
+    }
+    private fun resetJournal() {
+        main.removeCallbacks(journalRead)
+        main.removeCallbacks(journalTimeout)
+        journalAddress = 0x81
+        journalIndex = 1
+        journalTotal = 0
+        journalWaiting = false
+        journalFailures = 0
+        journalDone = false
+    }
 
     private val notifyUuid = UUID.fromString("0000fff1-0000-1000-8000-00805f9b34fb")
     private val writeUuid = UUID.fromString("0000fff2-0000-1000-8000-00805f9b34fb")
@@ -68,9 +126,10 @@ class BmsBleClient(private val context: Context, private val listener: Listener)
     private val cccdUuid = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
 
     private val assembler = ModbusFrameAssembler(
-        onPayload = { payload -> main.post { onFrame(payload) } },
-        onWriteEcho = { echo -> main.post { onWriteEcho(echo) } },
-        onWriteException = { code -> main.post { failMos("BMS : commande rejetée (Modbus $code)") } }
+        onPayload = { payload -> onFrame(payload) },
+        onWriteEcho = { echo -> onWriteEcho(echo) },
+        onWriteException = { code -> main.post { failMos("BMS : commande rejetée (Modbus $code)") } },
+        onJournalPayload = { address, payload -> onJournalFrame(address, payload) }
     )
 
     private fun onFrame(payload: ByteArray) {
@@ -136,7 +195,7 @@ class BmsBleClient(private val context: Context, private val listener: Listener)
      * any timeout or disconnect is reported as unknown state, never retried.
      */
     fun setMos(switch: MosSwitch, enabled: Boolean): Boolean {
-        if (!connected || !polling || tx == null || pendingMos != null) return false
+        if (!connected || !polling || tx == null || pendingMos != null || journalWaiting) return false
         val fresh = lastSnapshot?.takeIf { System.currentTimeMillis() - it.timestampMs < 15_000L }
             ?: return false
         val observed = if (switch == MosSwitch.CHARGE) fresh.chargingAllowed else fresh.dischargingAllowed
@@ -146,6 +205,7 @@ class BmsBleClient(private val context: Context, private val listener: Listener)
         }
         val bytes = BmsProtocol.mosWriteRequest(switch, enabled)
         main.removeCallbacks(pollRunnable)
+        main.removeCallbacks(journalRead)
         pendingMos = PendingMos(switch, enabled, bytes)
         if (!writeCommand(bytes)) {
             failMos("Écriture Bluetooth impossible")
@@ -254,6 +314,7 @@ class BmsBleClient(private val context: Context, private val listener: Listener)
                 BmsProtocol.capacityRequest else BmsProtocol.statusRequest
             tick++
             if (!writeCommand(command)) listener.onError("Échec de lecture BLE")
+            if (!journalDone) main.postDelayed(journalRead, 1500L)
             main.postDelayed(this, 5_000L)
         }
     }
@@ -333,6 +394,8 @@ class BmsBleClient(private val context: Context, private val listener: Listener)
                 connected = true
                 polling = true
                 tick = 0
+                resetJournal()
+                listener.onJournalState("Recherche de l’historique…")
                 lastSnapshot = null
                 listener.onState("Mesures en direct", true)
                 main.removeCallbacks(pollRunnable)
@@ -360,6 +423,8 @@ class BmsBleClient(private val context: Context, private val listener: Listener)
     }
 
     private fun dropGatt() {
+        resetJournal()
+        assembler.clear()
         main.removeCallbacks(pollRunnable)
         main.removeCallbacks(verifyRunnable)
         main.removeCallbacks(mosTimeout)
