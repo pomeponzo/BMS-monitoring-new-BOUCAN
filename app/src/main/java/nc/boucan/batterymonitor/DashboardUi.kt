@@ -192,8 +192,11 @@ class DashboardUi(private val activity: Activity) {
         journalStatus = label("En attente de connexion", 13f, muted)
         page.addView(journalStatus)
         journalButton = Button(activity).apply {
-            text = "Voir les événements"
+            text = "Ouvrir l’historique"
             isAllCaps = false
+            textSize = 15f
+            setTextColor(ink)
+            background = shape(paper, 6f)
         }
         page.addView(journalButton, LinearLayout.LayoutParams(-1, dp(48)))
         gap(page, 20)
@@ -203,7 +206,7 @@ class DashboardUi(private val activity: Activity) {
         chargeMos = stateRow(page, "Charge")
         chargeControl = mosButton(page, MosSwitch.CHARGE)
         gap(page, 8)
-        dischargeMos = stateRow(page, "DÉCharge")
+        dischargeMos = stateRow(page, "Décharge")
         dischargeControl = mosButton(page, MosSwitch.DISCHARGE)
         gap(page, 12)
         alarms = stateRow(page, "Alarmes")

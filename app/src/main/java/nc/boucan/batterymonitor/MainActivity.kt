@@ -20,6 +20,8 @@ import android.widget.ArrayAdapter
  */
 class MainActivity : Activity(), BmsBleClient.Listener {
     private lateinit var ui: DashboardUi
+    private lateinit var screen: android.widget.FrameLayout
+    private var historyUi: HistoryUi? = null
     private lateinit var ble: BmsBleClient
     private val main = Handler(Looper.getMainLooper())
     private var foreground = false
@@ -40,7 +42,9 @@ class MainActivity : Activity(), BmsBleClient.Listener {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         ui = DashboardUi(this)
-        setContentView(ui.root)
+        screen = android.widget.FrameLayout(this)
+        screen.addView(ui.root, android.widget.FrameLayout.LayoutParams(-1, -1))
+        setContentView(screen)
         ble = BmsBleClient(this, this)
         ui.connectButton.setOnClickListener {
             if (ui.isConnected) {
@@ -283,6 +287,7 @@ class MainActivity : Activity(), BmsBleClient.Listener {
             }
         }
         ui.showJournal(journalMessage, journal.size)
+        historyUi?.update(journal.values.toList(), journalMessage)
     }
 
     override fun onJournalEntry(entry: JournalEntry) {
@@ -292,11 +297,13 @@ class MainActivity : Activity(), BmsBleClient.Listener {
             }
         }
         ui.showJournal(journalMessage, journal.size)
+        historyUi?.update(journal.values.toList(), journalMessage)
     }
 
     override fun onJournalState(message: String) {
         journalMessage = message
         ui.showJournal(message, journal.size)
+        historyUi?.update(journal.values.toList(), message)
     }
 
     private fun journalCsv(): String = buildString {
@@ -308,31 +315,29 @@ class MainActivity : Activity(), BmsBleClient.Listener {
     }
 
     private fun openJournal() {
-        val entries = journal.values.sortedByDescending { it.date }
-        val rows = entries.map {
-            String.format(java.util.Locale.FRANCE, "%s\n%.1f %%   ·   %.1f V   ·   %.1f A",
-                it.date.replace("T", " "), it.soc, it.voltage, it.current)
-        }.toTypedArray()
-        val builder = AlertDialog.Builder(this).setTitle("Historique")
-            .setNegativeButton("Fermer", null)
-        if (entries.isEmpty()) builder.setMessage(journalMessage)
-        else {
-            builder.setItems(rows) { _, index ->
-                val e = entries[index]
-                AlertDialog.Builder(this).setTitle(e.date.replace("T", " "))
-                    .setMessage("Cellules : " + e.cells.joinToString(" / ") + " mV\nTempératures : " +
-                        e.temperatures.joinToString(" / ") + " °C")
-                    .setPositiveButton("Fermer", null).show()
-            }
-            builder.setNeutralButton("Exporter CSV") { _, _ ->
-                startActivityForResult(Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
-                    addCategory(Intent.CATEGORY_OPENABLE)
-                    type = "text/csv"
-                    putExtra(Intent.EXTRA_TITLE, "Boucan-historique.csv")
-                }, 203)
-            }
-        }
-        builder.show()
+        if (historyUi != null) return
+        val view = HistoryUi(this, onClose = { closeJournal() }, onExport = {
+            startActivityForResult(Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+                addCategory(Intent.CATEGORY_OPENABLE)
+                type = "text/csv"
+                putExtra(Intent.EXTRA_TITLE, "Boucan-historique.csv")
+            }, 203)
+        })
+        historyUi = view
+        ui.root.visibility = android.view.View.GONE
+        screen.addView(view.root, android.widget.FrameLayout.LayoutParams(-1, -1))
+        view.update(journal.values.toList(), journalMessage)
+    }
+
+    private fun closeJournal() {
+        historyUi?.let { screen.removeView(it.root) }
+        historyUi = null
+        ui.root.visibility = android.view.View.VISIBLE
+    }
+
+    @Suppress("DEPRECATION")
+    override fun onBackPressed() {
+        if (historyUi != null) closeJournal() else super.onBackPressed()
     }
 
     override fun onSnapshot(snapshot: BatterySnapshot) {
